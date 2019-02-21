@@ -22,8 +22,8 @@ import sjcl = require('./vendor/sjcl.min.js');
 import bs58 = require('bs58');
 import common = require('./common');
 import Util = require('./util');
-import Promise = require('bluebird');
-import co = Promise.coroutine;
+import Bluebird = require('bluebird');
+import co = Bluebird.coroutine;
 import pjson = require('../package.json');
 import moment = require('moment');
 import * as _ from 'lodash';
@@ -49,7 +49,7 @@ superagent.Request.prototype.end = function(cb) {
     return _end.call(self, cb);
   }
 
-  return new Promise.Promise(function(resolve, reject) {
+  return new Bluebird.Promise(function(resolve, reject) {
     let error;
     try {
       return _end.call(self, function(error, response) {
@@ -231,7 +231,7 @@ const BitGo = function(params) {
   this._token = params.accessToken || null;
   this._refreshToken = params.refreshToken || null;
   this._userAgent = params.userAgent || 'BitGoJS/' + this.version();
-  this._promise = Promise;
+  this._promise = Bluebird;
 
   // whether to perform extra client-side validation for some things, such as
   // address validation or signature validation. defaults to true, but can be
@@ -496,7 +496,7 @@ BitGo.prototype.clear = function() {
 
 // Helper function to return a rejected promise or call callback with error
 BitGo.prototype.reject = function(msg, callback) {
-  return Promise.reject(new Error(msg)).nodeify(callback);
+  return Bluebird.reject(new Error(msg)).nodeify(callback);
 };
 
 //
@@ -1375,14 +1375,13 @@ BitGo.prototype.removeAccessToken = function(params, callback) {
 
   const self = this;
 
-  return Promise.try(function() {
+  return Bluebird.try(function() {
     if (params.id) {
       return params.id;
     }
 
     // we have to get the id of the token by using the label before we can delete it
-    return self.listAccessTokens()
-    .then(function(tokens) {
+    return self.listAccessTokens().then(function(tokens) {
       if (!tokens) {
         throw new Error('token with this label does not exist');
       }
@@ -1397,12 +1396,13 @@ BitGo.prototype.removeAccessToken = function(params, callback) {
       return matchingTokens[0].id;
     });
   })
-  .then(function(tokenId) {
-    return self.del(self.url('/user/accesstoken/' + tokenId))
-    .send()
-    .result();
-  })
-  .nodeify(callback);
+    .then(function(tokenId) {
+      return self
+        .del(self.url('/user/accesstoken/' + tokenId))
+        .send()
+        .result();
+    })
+    .nodeify(callback);
 };
 
 //
