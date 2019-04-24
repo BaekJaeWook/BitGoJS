@@ -248,6 +248,8 @@ Wallet.prototype.transfers = function(params, callback) {
     query.valueLt = params.valueLt;
   }
 
+  query.state = params.state;
+
   return this.bitgo.get(this.url('/transfer'))
   .query(query)
   .result()
