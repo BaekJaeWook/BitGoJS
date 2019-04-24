@@ -41,6 +41,9 @@ class ErrorExcessSendAmount extends Error {
   }
 }
 
+// echo -n 'managed' | sha256sum
+export const walletPassphrase = '7fdfda5f50a433ae127a784fc143105fb6d93fedec7601ddeb3d1d584f83de05';
+
 export type BitGoWallet = any;
 
 export interface Unspent {
@@ -382,11 +385,6 @@ export class ManagedWallets {
     return '0000000';
   }
 
-  static getPassphrase() {
-    // echo -n 'managed' | sha256sum
-    return '7fdfda5f50a433ae127a784fc143105fb6d93fedec7601ddeb3d1d584f83de05';
-  }
-
   public getPredicateUnspentsConfirmed(confirmations: number): ManagedWalletPredicate {
     return (w: BitGoWallet, us: Unspent[]) =>
       us.every((u) => this.chain.getConfirmations(u) >= confirmations);
@@ -495,11 +493,11 @@ export class ManagedWallets {
     debug(`fetching wallets for ${this.username}...`);
     this.walletList = await this.getWalletList();
 
-    this.faucet = await this.getOrCreateWallet('managed-faucet');
+    this.faucet = await this.getWalletWithLabel('managed-faucet', { create: true });
 
     this.wallets = (async() => await Bluebird.map(
       Array(this.poolSize).fill(null).map((v, i) => i),
-      (i) => this.getOrCreateWallet(this.getLabelForIndex(i)),
+      (i) => this.getWalletWithLabel(this.getLabelForIndex(i), { create: !this.dryRun }),
       { concurrency: 4 }
     ))();
 
@@ -536,7 +534,16 @@ export class ManagedWallets {
 
   public async getUnspents(w: BitGoWallet, { cache = true }: { cache?: boolean } = {}): Promise<Unspent[]> {
     if (!this.walletUnspents.has(w) || !cache) {
-      this.walletUnspents.set(w, ((async() => (await w.unspents()).unspents))());
+      this.walletUnspents.set(w, ((async() => {
+        const all = [];
+        let prevId;
+        do {
+          const page = await w.unspents({ prevId, limit: 500 });
+          all.push(...page.unspents);
+          prevId = page.nextBatchPrevId;
+        } while (prevId !== undefined);
+        return all;
+      }))());
     }
     return this.walletUnspents.get(w);
   }
@@ -544,20 +551,21 @@ export class ManagedWallets {
   /**
    * Returns a wallet with given label. If wallet with label does not exist yet, create it.
    * @param allWallets
+   * @param create - if true, creates new wallet with label if one doesn't exist. Throws error otherwise.
    * @param label
    * @return {*}
    */
-  private async getOrCreateWallet(label: string): Promise<BitGoWallet> {
+  public async getWalletWithLabel(label: string, { create }: { create: boolean }): Promise<BitGoWallet> {
     const walletsWithLabel = this.walletList
     .filter(w => w.label() === label);
     if (walletsWithLabel.length < 1) {
       debug(`no wallet with label ${label} - creating new wallet...`);
-      if (this.dryRun) {
-        throw new Error(`not creating new wallet (dryRun=true)`);
+      if (!create) {
+        throw new Error(`not creating new wallet (create=false)`);
       }
       const { wallet } = await this.basecoin.wallets().generateWallet({
         label,
-        passphrase: ManagedWallets.getPassphrase()
+        passphrase: walletPassphrase
       });
       this.walletUnspents.set(wallet, Promise.resolve([]));
       return wallet;
@@ -678,7 +686,7 @@ export class ManagedWallets {
         w.sweep({
           feeRate: 1000,
           address: faucetAddress,
-          walletPassphrase: ManagedWallets.getPassphrase()
+          walletPassphrase
         })
     );
     sweepErrors.forEach((e) => console.error(e));
@@ -731,6 +739,7 @@ export class ManagedWallets {
     });
 
     await runCollectErrors(
+      // @ts-ignore
       [...sendsByWallet.entries()],
       async([w, sends]) => {
         if (sends.length === 0) {
@@ -761,12 +770,20 @@ export class ManagedWallets {
           console.warn(`dryRun set: skipping sendMany for ${w.label()}`);
           return;
         }
-        await w.sendMany({
-          feeRate,
-          unspents,
-          recipients,
-          walletPassphrase: ManagedWallets.getPassphrase()
-        });
+
+        {
+          const response = await w.sendMany({
+            feeRate,
+            unspents,
+            recipients,
+            walletPassphrase
+          });
+
+          const { txid, transfer: { transferId } } = response;
+
+          debug(response);
+          debug(`Wallet ${w.label()}: txid=${txid}, transfer=${transferId}`);
+        }
       }
     );
   }
@@ -827,12 +844,12 @@ const main = async() => {
   }
 };
 
-process.addListener('unhandledRejection', (e) => {
-  console.error(e);
-  process.abort();
-});
-
 if (require.main === module) {
+  process.addListener('unhandledRejection', (e) => {
+    console.error(e);
+    process.abort();
+  });
+
   main()
   .catch((e) => {
     console.error(e);
