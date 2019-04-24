@@ -688,71 +688,94 @@ class AbstractUtxoCoin extends BaseCoin {
     const txb = bitcoin.TransactionBuilder.fromTransaction(transaction, this.network);
     this.prepareTransactionBuilder(txb);
 
-    const signatureIssues = [];
-    for (let index = 0; index < transaction.ins.length; ++index) {
-      debug('Signing input %d of %d', index + 1, transaction.ins.length);
+    const getUnspentInfo = function(self, txPrebuild, index) {
       const currentUnspent = txPrebuild.txInfo.unspents[index];
-      if (this.isBitGoTaintedUnspent(currentUnspent)) {
-        debug('Skipping input %d of %d (unspent from replay protection address which is platform signed only)', index + 1, transaction.ins.length);
-        continue;
-      }
-      const path = 'm/0/0/' + currentUnspent.chain + '/' + currentUnspent.index;
-      const privKey = hdPath.deriveKey(path);
-      privKey.network = this.network;
-
-      const currentSignatureIssue: any = {
+      const unspentInfo: any = {
         inputIndex: index,
         unspent: currentUnspent,
-        path: path
+        path: 'm/0/0/' + currentUnspent.chain + '/' + currentUnspent.index
       };
-      debug('Input details: %O', currentSignatureIssue);
 
+      return {
+        unspentInfo,
+        isP2wsh: !currentUnspent.redeemScript,
+        isBitGoTaintedUnspent: self.isBitGoTaintedUnspent(currentUnspent)
+      };
+    };
 
-      const isP2wsh = !currentUnspent.redeemScript;
+    const signatureIssues = [];
+    // Sign inputs
+    for (let index = 0; index < transaction.ins.length; ++index) {
+      debug('Signing input %d of %d', index + 1, transaction.ins.length);
+      const { unspentInfo, isP2wsh, isBitGoTaintedUnspent } = getUnspentInfo(this, txPrebuild, index);
+      if (isBitGoTaintedUnspent) {
+        debug(
+          'Skipping input %d of %d (unspent from replay protection address which is platform signed only)',
+          index + 1, transaction.ins.length
+        );
+        continue;
+      }
+      const privKey = hdPath.deriveKey(unspentInfo.path);
+      privKey.network = this.network;
+
+      debug('Input details: %O', unspentInfo);
+
       const sigHashType = this.defaultSigHashType;
       try {
         if (isP2wsh) {
           debug('Signing p2wsh input');
-          const witnessScript = Buffer.from(currentUnspent.witnessScript, 'hex');
+          const witnessScript = Buffer.from(unspentInfo.unspent.witnessScript, 'hex');
           const witnessScriptHash = bitcoin.crypto.sha256(witnessScript);
           const prevOutScript = bitcoin.script.witnessScriptHash.output.encode(witnessScriptHash);
-          txb.sign(index, privKey, prevOutScript, sigHashType, currentUnspent.value, witnessScript);
+          txb.sign(index, privKey, prevOutScript, sigHashType, unspentInfo.unspent.value, witnessScript);
         } else {
-          const subscript = new Buffer(currentUnspent.redeemScript, 'hex');
-          const isP2shP2wsh = !!currentUnspent.witnessScript;
+          const subscript = new Buffer(unspentInfo.unspent.redeemScript, 'hex');
+          const isP2shP2wsh = !!unspentInfo.unspent.witnessScript;
           if (isP2shP2wsh) {
             debug('Signing p2shP2wsh input');
-            const witnessScript = Buffer.from(currentUnspent.witnessScript, 'hex');
-            txb.sign(index, privKey, subscript, sigHashType, currentUnspent.value, witnessScript);
+            const witnessScript = Buffer.from(unspentInfo.unspent.witnessScript, 'hex');
+            txb.sign(index, privKey, subscript, sigHashType, unspentInfo.unspent.value, witnessScript);
           } else {
             debug('Signing p2sh input');
-            txb.sign(index, privKey, subscript, sigHashType, currentUnspent.value);
+            txb.sign(index, privKey, subscript, sigHashType, unspentInfo.unspent.value);
           }
         }
 
       } catch (e) {
         debug('Failed to sign input:', e);
-        currentSignatureIssue.error = e;
-        signatureIssues.push(currentSignatureIssue);
+        unspentInfo.error = e;
+        signatureIssues.push(unspentInfo);
+        continue;
+      }
+    }
+
+    if (isLastSignature) {
+      transaction = txb.build();
+    } else {
+      transaction = txb.buildIncomplete();
+    }
+
+    // Verify input signatures
+    for (let index = 0; index < transaction.ins.length; ++index) {
+      debug('Verifying input signature %d of %d', index + 1, transaction.ins.length);
+      const { unspentInfo, isP2wsh, isBitGoTaintedUnspent } = getUnspentInfo(this, txPrebuild, index);
+      if (isBitGoTaintedUnspent) {
+        debug(
+          'Skipping input signature %d of %d (unspent from replay protection address which is platform signed only)',
+          index + 1, transaction.ins.length
+        );
         continue;
       }
 
-      if (isLastSignature) {
-        transaction = txb.build();
-      } else {
-        transaction = txb.buildIncomplete();
-      }
-
-      // after signature validation, prepare p2wsh setup
       if (isP2wsh) {
         transaction.setInputScript(index, Buffer.alloc(0));
       }
 
-      const isValidSignature = this.verifySignature(transaction, index, currentUnspent.value);
+      const isValidSignature = this.verifySignature(transaction, index, unspentInfo.unspent.value);
       if (!isValidSignature) {
         debug('Invalid signature');
-        currentSignatureIssue.error = new Error('invalid signature');
-        signatureIssues.push(currentSignatureIssue);
+        unspentInfo.error = new Error('invalid signature');
+        signatureIssues.push(unspentInfo);
       }
     }
 
