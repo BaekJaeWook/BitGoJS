@@ -770,7 +770,7 @@ export class ManagedWallets {
       });
     });
 
-    await runCollectErrors(
+    const errors = await runCollectErrors(
       // @ts-ignore
       [...sendsByWallet.entries()],
       async([w, sends]) => {
@@ -804,7 +804,7 @@ export class ManagedWallets {
           }
           const faucetUnspents = await this.getUnspents(faucet);
           if (faucetUnspents.length > 100) {
-            unspents = faucetUnspents;
+            unspents = faucetUnspents.map(u => u.id);
             debug(`consolidate ${unspents.length} faucet unspents`);
           }
         }
@@ -822,13 +822,17 @@ export class ManagedWallets {
         });
       }
     );
+
+    if (errors.length > 0) {
+      throw new Error(`${errors.length} reset errors`);
+    }
   }
 
   async checkTransfers() {
     // ignore failed transfers before this point
     const checkpoint = moment('2019-04-24');
     const managedWallets = await this.getAll();
-    runCollectErrors(
+    const errors = await runCollectErrors(
       managedWallets,
       async(mw) => {
         const w = mw.wallet;
@@ -846,6 +850,10 @@ export class ManagedWallets {
         }
       }
     );
+
+    if (errors.length > 0) {
+      throw new Error(`${errors.length} errors in checkTransfers()`);
+    }
   }
 }
 
