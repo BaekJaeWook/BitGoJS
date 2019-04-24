@@ -10,7 +10,8 @@ import {
   GroupPureP2wsh,
   WalletConfig,
   ManagedWallets,
-  sumUnspents
+  sumUnspents,
+  walletPassphrase
 } from './ManagedWallets';
 
 import 'should';
@@ -26,8 +27,6 @@ const wait = async(seconds) => {
   await Bluebird.delay(seconds * 1000);
   debug(`done`);
 };
-
-const walletPassphrase = ManagedWallets.getPassphrase();
 
 const walletTests = [];
 const walletTest = function(title, callback, testFunc: TestFunction | ExclusiveTestFunction = it) {
@@ -47,7 +46,7 @@ walletTest('should self-send to new default receive addr', async function(testWa
   await wallet.sendMany({
     feeRate,
     recipients: [{ address, amount }],
-    walletPassphrase: ManagedWallets.getPassphrase()
+    walletPassphrase,
   });
 });
 
@@ -135,7 +134,7 @@ walletTest('accelerateTx should succeed', async function(testWallets) {
   const { tx: parentTxHex, txid: parentTxid } = await wallet.sendMany({
     feeRate,
     recipients: [{ address, amount }],
-    walletPassphrase: ManagedWallets.getPassphrase()
+    walletPassphrase
   });
 
   const getInputId = ({ hash, index }) =>
