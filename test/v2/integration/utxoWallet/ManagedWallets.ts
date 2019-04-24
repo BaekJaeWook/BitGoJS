@@ -699,6 +699,14 @@ export class ManagedWallets {
     }
   }
 
+  async checkTransferStatus(wallet: BitGoWallet, transferId: string, waitMS = 10_000) {
+    await Bluebird.delay(waitMS);
+    const { state } = await wallet.getTransfer({ id: transferId });
+    if (state === 'removed') {
+      throw new Error(`wallet ${wallet.label()}: transfer ${transferId} was removed`);
+    }
+  }
+
   async resetWallets() {
     // refresh unspents of used wallets
     for (const mw of await this.getAll()) {
@@ -779,10 +787,12 @@ export class ManagedWallets {
             walletPassphrase
           });
 
-          const { txid, transfer: { transferId } } = response;
+          const { txid, transfer: { id: transferId } } = response;
 
           debug(response);
           debug(`Wallet ${w.label()}: txid=${txid}, transfer=${transferId}`);
+
+          await this.checkTransferStatus(w, transferId);
         }
       }
     );
