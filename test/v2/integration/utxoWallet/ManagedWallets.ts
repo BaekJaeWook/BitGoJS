@@ -8,10 +8,12 @@ import * as nock from 'nock';
 import { Codes, Dimensions, IDimensions } from '@bitgo/unspents';
 
 import debugLib from 'debug';
+
 const debug = debugLib('ManagedWallets');
 
 import * as utxolib from 'bitgo-utxo-lib';
 import * as BitGo from '../../../../src/bitgo';
+import * as moment from 'moment';
 
 const concurrencyBitGoApi = 4;
 
@@ -24,7 +26,7 @@ class DryFaucetError extends Error {
       `[faucetBalance=${faucetWallet.balance()}, ` +
       `spendable=${faucetWallet.spendableBalance()}, ` +
       `sendAmount=${spendAmount}].`
-    + `Please deposit tbtc at ${faucetWallet.receiveAddress()}.`
+      + `Please deposit tbtc at ${faucetWallet.receiveAddress()}.`
     );
   }
 }
@@ -80,13 +82,16 @@ enum UnspentType {
 
 export declare class CodeGroup {
   values: ReadonlyArray<ChainCode>;
+
   constructor(values: Iterable<ChainCode>);
+
   has(code: ChainCode): boolean;
 }
 
 export declare class CodesByPurpose extends CodeGroup {
   internal: ChainCode;
   external: ChainCode;
+
   constructor(t: UnspentType);
 }
 
@@ -96,7 +101,9 @@ export const sumUnspents = (us: Unspent[]) =>
 
 export interface WalletConfig {
   name: string;
+
   getMinUnspents(c: CodeGroup): number;
+
   getMaxUnspents(c: CodeGroup): number;
 }
 
@@ -165,7 +172,8 @@ class Timechain {
   public constructor(
     public chainHead: number,
     public network: any,
-  ) { }
+  ) {
+  }
 
   public getMaxSpendable(us: Unspent[], recipients: string[], feeRate: number) {
     return getMaxSpendable(
@@ -193,7 +201,8 @@ export class ManagedWallet {
     public wallet: BitGoWallet,
     public unspents: Unspent[],
     public addresses: Address[]
-  ) { }
+  ) {
+  }
 
   public getWalletLimits(): WalletLimits {
     const minUnspentBalance = 0.001e8;
@@ -425,7 +434,7 @@ export class ManagedWallets {
       walletConfig: WalletConfig,
       poolSize: number,
       dryRun: boolean,
-  }) {
+    }) {
     if (!['test', 'dev'].includes(env)) {
       throw new Error(`unsupported env "${env}"`);
     }
@@ -449,6 +458,8 @@ export class ManagedWallets {
         debug('resetWallets() start');
         await mw.resetWallets();
         debug('resetWallets() finished');
+
+        await mw.checkFailedTransfers();
       });
     }
   }
@@ -643,7 +654,7 @@ export class ManagedWallets {
     if (found === undefined) {
       throw new Error(
         `No wallet matching criteria found ` +
-      `(`
+        `(`
         + `nUsed=${stats.nUsed},`
         + `nNeedsReset=${stats.nNeedsReset},`
         + `nNotReady=${stats.nNotReady},`
@@ -656,6 +667,30 @@ export class ManagedWallets {
 
     found.setUsed();
     return found.wallet;
+  }
+
+  async customSweepWallet(wallet: BitGoWallet, address: string, unspents?: Unspent[]) {
+    // we won't use `wallet.sweep()` since it does not work for 200+ unspents
+    if (unspents === undefined) {
+      return await this.customSweepWallet(wallet, address, await this.getUnspents(wallet));
+    }
+
+    if (unspents.length === 0) {
+      return;
+    }
+
+    const feeRate = 2_000;
+    const maxUnspents = 200;
+    const nextUnspents = unspents.splice(maxUnspents);
+    const amount = this.chain.getMaxSpendable(unspents, [address], feeRate);
+    debug(`customSweep ${wallet.label()}: ${amount} with ${unspents.length} unspents`);
+    await wallet.sendMany({
+      feeRate,
+      unspents: unspents.map(u => u.id),
+      recipients: [{ address, amount }],
+      walletPassphrase
+    });
+    await this.customSweepWallet(wallet, address, nextUnspents);
   }
 
   async removeAllWallets() {
@@ -682,28 +717,15 @@ export class ManagedWallets {
     debug(`sweeping ${sweepWallets.length} wallets`);
     const sweepErrors = await runCollectErrors(
       sweepWallets,
-      (w) =>
-        w.sweep({
-          feeRate: 1000,
-          address: faucetAddress,
-          walletPassphrase
-        })
+      (w) => this.customSweepWallet(w, faucetAddress)
     );
     sweepErrors.forEach((e) => console.error(e));
 
     if (sweepWallets.length > 0) {
       throw new Error(
         `${sweepWallets.length} wallets still had unspents. ` +
-      `Please try again when sweep tx have confirmed`
+        `Please try again when sweep tx have confirmed`
       );
-    }
-  }
-
-  async checkTransferStatus(wallet: BitGoWallet, transferId: string, waitMS = 10_000) {
-    await Bluebird.delay(waitMS);
-    const { state } = await wallet.getTransfer({ id: transferId });
-    if (state === 'removed') {
-      throw new Error(`wallet ${wallet.label()}: transfer ${transferId} was removed`);
     }
   }
 
@@ -742,7 +764,9 @@ export class ManagedWallets {
     sendsByWallet.forEach((sends, wallet) => {
       debug(`${wallet.label()} ->`);
       sends.forEach((send) => {
-        send.recipients.forEach((r) => { debug(`  ${r.address} ${r.amount}`); });
+        send.recipients.forEach((r) => {
+          debug(`  ${r.address} ${r.amount}`);
+        });
       });
     });
 
@@ -774,25 +798,51 @@ export class ManagedWallets {
           throw new ErrorExcessSendAmount(w, sum);
         }
 
+        if (w === faucet) {
+          if (unspents !== undefined) {
+            throw new Error(`expected faucet unspents to be empty`);
+          }
+          const faucetUnspents = await this.getUnspents(faucet);
+          if (faucetUnspents.length > 100) {
+            unspents = faucetUnspents;
+            debug(`consolidate ${unspents.length} faucet unspents`);
+          }
+        }
+
         if (this.dryRun) {
           console.warn(`dryRun set: skipping sendMany for ${w.label()}`);
           return;
         }
 
-        {
-          const response = await w.sendMany({
-            feeRate,
-            unspents,
-            recipients,
-            walletPassphrase
-          });
+        await w.sendMany({
+          feeRate,
+          unspents,
+          recipients,
+          walletPassphrase
+        });
+      }
+    );
+  }
 
-          const { txid, transfer: { id: transferId } } = response;
+  async checkFailedTransfers() {
+    // ignore failed transfers before this point
+    const checkpoint = moment('2019-04-24');
+    const managedWallets = await this.getAll();
+    runCollectErrors(
+      managedWallets,
+      async(mw) => {
+        const w = mw.wallet;
+        const transferCount = async(state) =>
+          (await w.transfers({ state, dateGte: checkpoint.toISOString() }))
+          .transfers.length;
 
-          debug(response);
-          debug(`Wallet ${w.label()}: txid=${txid}, transfer=${transferId}`);
-
-          await this.checkTransferStatus(w, transferId);
+        const nRemovedTransfers = await transferCount('removed');
+        const nFailedTransfers = await transferCount('failed');
+        if (nRemovedTransfers > 0 || nFailedTransfers > 0) {
+          throw new Error(
+            `wallet ${w.label()} transfer failures: ` +
+            `${nFailedTransfers} failed, ${nRemovedTransfers} removed`
+          );
         }
       }
     );
