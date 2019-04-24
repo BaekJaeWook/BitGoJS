@@ -459,7 +459,7 @@ export class ManagedWallets {
         await mw.resetWallets();
         debug('resetWallets() finished');
 
-        await mw.checkFailedTransfers();
+        await mw.checkTransfers();
       });
     }
   }
@@ -824,7 +824,7 @@ export class ManagedWallets {
     );
   }
 
-  async checkFailedTransfers() {
+  async checkTransfers() {
     // ignore failed transfers before this point
     const checkpoint = moment('2019-04-24');
     const managedWallets = await this.getAll();
@@ -877,7 +877,16 @@ const main = async() => {
   parser.addArgument(['--cleanup'], { nargs: 0 });
   parser.addArgument(['--dryRun'], { nargs: 0 });
   parser.addArgument(['--reset'], { nargs: 0 });
-  const { env, poolSize, group: groupName, cleanup, reset, dryRun } = parser.parseArgs();
+  parser.addArgument(['--checkTransfers'], { nargs: 0 });
+  const {
+    env,
+    poolSize,
+    group: groupName,
+    cleanup,
+    reset,
+    checkTransfers,
+    dryRun
+  } = parser.parseArgs();
   const walletConfig = [GroupPureP2sh, GroupPureP2shP2wsh, GroupPureP2wsh]
   .find(({ name }) => name === groupName);
   if (!walletConfig) {
@@ -891,8 +900,8 @@ const main = async() => {
     { dryRun }
   );
 
-  if ([cleanup, reset].filter(Boolean).length !== 1) {
-    throw new Error(`must pick one of "cleanup" or "reset"`);
+  if ([cleanup, reset, checkTransfers].filter(Boolean).length !== 1) {
+    throw new Error(`must pick one of "cleanup", "reset" or "checkTransfers"`);
   }
 
   if (cleanup) {
@@ -901,6 +910,10 @@ const main = async() => {
 
   if (reset) {
     await testWallets.resetWallets();
+  }
+
+  if (checkTransfers) {
+    await testWallets.checkTransfers();
   }
 };
 
