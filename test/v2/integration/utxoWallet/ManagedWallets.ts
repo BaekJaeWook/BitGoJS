@@ -456,10 +456,28 @@ export class ManagedWallets {
       after(async function() {
         this.timeout(600_000);
         debug('resetWallets() start');
-        await mw.resetWallets();
-        debug('resetWallets() finished');
 
-        await mw.checkTransfers();
+        const errors = [];
+
+        try {
+          await mw.resetWallets();
+          debug('resetWallets() finished without error');
+        } catch (e) {
+          console.error(e);
+          errors.push(e);
+        }
+
+        try {
+          await mw.checkTransfers();
+          debug('checkTransfers() finished without error');
+        } catch (e) {
+          console.error(e);
+          errors.push(e);
+        }
+
+        if (errors.length > 0) {
+          throw new Error(`errors in after() hook`);
+        }
       });
     }
   }
